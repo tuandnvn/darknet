@@ -1,3 +1,4 @@
+#include <dirent.h>
 #include "network.h"
 #include "region_layer.h"
 #include "cost_layer.h"
@@ -6,6 +7,8 @@
 #include "box.h"
 #include "demo.h"
 #include "option_list.h"
+#include "cJSON.h"
+#include "stdio.h"
 
 #ifdef OPENCV
 #include "opencv2/highgui/highgui_c.h"
@@ -492,6 +495,137 @@ void test_detector(char *datacfg, char *cfgfile, char *weightfile, char *filenam
 #endif
         if (filename) break;
     }
+}
+
+void test_detector_get_boxes(network net, char *filename, float thresh, box *boxes, float **probs, int *w, int *h)
+{
+    clock_t time;
+    float nms=.4;
+        
+    image im = load_image_color(filename,0,0);
+    *w = im.w;
+    *h = im.h;
+    image sized = resize_image(im, net.w, net.h);
+    layer l = net.layers[net.n-1];
+
+    float *X = sized.data;
+    time=clock();
+    network_predict(net, X);
+    printf("%s: Predicted in %f seconds.\n", filename, sec(clock()-time));
+    get_region_boxes(l, 1, 1, thresh, probs, boxes, 0, 0);
+    if (nms) do_nms_sort(boxes, probs, l.w*l.h*l.n, l.classes, nms);
+
+    free_image(im);
+    free_image(sized);
+}
+
+void add_to_json_tree( cJSON *results, layer l, float thresh, char *filename, box *boxes, float **probs, char **names, int w, int h) 
+{
+    int num = l.w * l.h * l.n;
+    int classes = l.classes;
+    
+    /* Add result into json tree */
+    
+    cJSON *fileResult;
+    cJSON *scores;
+    cJSON *captions;
+    cJSON *t_boxes;
+    cJSON *t_box;
+
+    fileResult = cJSON_CreateObject();
+    cJSON_AddStringToObject(fileResult, "img_name", filename);
+    cJSON_AddItemToObject(fileResult, "scores", scores = cJSON_CreateArray());
+    cJSON_AddItemToObject(fileResult, "captions", captions = cJSON_CreateArray());
+    cJSON_AddItemToObject(fileResult, "boxes", t_boxes = cJSON_CreateArray());
+		
+
+    int i;
+    for(i = 0; i < num; ++i){
+        int class = max_index(probs[i], classes);
+        float prob = probs[i][class];
+	box b = boxes[i];
+        if(prob > thresh){
+	    cJSON_AddItemToArray(scores, cJSON_CreateNumber(prob));
+	    cJSON_AddItemToArray(captions, cJSON_CreateString(names[class]) );
+
+	    cJSON_AddItemToArray(t_boxes, t_box = cJSON_CreateArray());
+	    cJSON_AddItemToArray(t_box, cJSON_CreateNumber(b.x * w));
+	    cJSON_AddItemToArray(t_box, cJSON_CreateNumber(b.y * h));	    
+	    cJSON_AddItemToArray(t_box, cJSON_CreateNumber(b.w * w));
+	    cJSON_AddItemToArray(t_box, cJSON_CreateNumber(b.h * h));
+	}
+    }
+
+    cJSON_AddItemToArray(results, fileResult);
+}
+
+void test_dir_detector(char *datacfg, char *cfgfile, char *weightfile, char *dirname, char *outputFile, float thresh) {
+    list *options = read_data_cfg(datacfg);
+    char *name_list = option_find_str(options, "names", "data/names.list");
+    char **names = get_labels(name_list);
+    network net = parse_network_cfg(cfgfile);
+    if(weightfile){
+        load_weights(&net, weightfile);
+    }
+    set_batch_network(&net, 1);
+    srand(2222222);
+    int j;
+    layer l = net.layers[net.n-1];
+
+    /* These will be reused between detection */
+    box *boxes = calloc(l.w*l.h*l.n, sizeof(box));
+    float **probs = calloc(l.w*l.h*l.n, sizeof(float *));
+    for(j = 0; j < l.w*l.h*l.n; ++j) probs[j] = calloc(l.classes, sizeof(float *));
+
+    int setOpt = 0;
+
+    /* Create the JSON tree */
+    cJSON *root;
+    cJSON *opt;
+    cJSON *results;
+    root = cJSON_CreateObject();
+    cJSON_AddItemToObject(root, "opt", opt = cJSON_CreateObject());
+    cJSON_AddItemToObject(root, "results", results = cJSON_CreateArray());
+    
+
+    /* Searching for file inside directory */
+    DIR *dir;
+    struct dirent *ent;
+    if (( dir = opendir(dirname)) != NULL ) {
+	while ((ent = readdir(dir)) != NULL) {
+	    char full_filename[256];
+
+	    char * filename = ent->d_name;
+	    strcpy(full_filename, dirname);
+	    strcat(full_filename, "/");
+	    strcat(full_filename, filename );  
+
+	    char * ext = strrchr(full_filename, '.');
+	    if (ext && ( !strcmp(ext, ".jpg") || !strcmp(ext, ".png"))) {
+		printf("Process %s.\n", full_filename);
+		int w = 0, h = 0;
+    		/* Run the detector for each image inside directory */
+    		test_detector_get_boxes(net, full_filename, thresh, boxes, probs, &w, &h);
+		if (!setOpt) {
+		    setOpt = 1;
+		    cJSON_AddItemToObject(opt, "image_size", cJSON_CreateNumber(w));
+		}
+		add_to_json_tree( results, l, thresh, filename, boxes, probs, names, w, h);
+	    } 
+	}
+    }
+
+    /* Write JSON tree into the output file */
+    char *finalResult = cJSON_Print(root);
+    FILE *outFile = fopen( outputFile, "w" );
+    
+    if (outFile != NULL ){
+	fputs( finalResult, outFile );
+	fclose( outFile );
+    }
+    
+    free(boxes);
+    free_ptrs((void **)probs, l.w*l.h*l.n); 
 }
 
 void run_detector(int argc, char **argv)
