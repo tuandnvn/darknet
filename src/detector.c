@@ -549,8 +549,8 @@ void add_to_json_tree( cJSON *results, layer l, float thresh, char *filename, bo
 	    cJSON_AddItemToArray(captions, cJSON_CreateString(names[class]) );
 
 	    cJSON_AddItemToArray(t_boxes, t_box = cJSON_CreateArray());
-	    cJSON_AddItemToArray(t_box, cJSON_CreateNumber(b.x * w));
-	    cJSON_AddItemToArray(t_box, cJSON_CreateNumber(b.y * h));	    
+	    cJSON_AddItemToArray(t_box, cJSON_CreateNumber((b.x - b.w/2) * w));
+	    cJSON_AddItemToArray(t_box, cJSON_CreateNumber((b.y - b.h/2) * h));	    
 	    cJSON_AddItemToArray(t_box, cJSON_CreateNumber(b.w * w));
 	    cJSON_AddItemToArray(t_box, cJSON_CreateNumber(b.h * h));
 	}
